@@ -49,7 +49,7 @@ const { execSync } = require('child_process');
   });
 
   // Navigate
-  await page.goto('https://example.com', { waitUntil: 'networkidle' });
+  await page.goto('https://www.duolingo.com', { waitUntil: 'networkidle' });
 
   // Get page title and save
   const title = await page.title();
@@ -73,7 +73,7 @@ const { execSync } = require('child_process');
       html = html.replace(new RegExp(`src=["']${escapeRegExp(src)}["']`, 'g'), `src="${newSrc}"`);
     }
   }
-  fs.writeFileSync('example.html', html);
+  fs.writeFileSync('duolingo.html', html);
 
   // Take screenshot
   await page.screenshot({ path: 'screenshots/screenshot.png', fullPage: true });
@@ -81,10 +81,10 @@ const { execSync } = require('child_process');
   await browser.close();
 
   // Create zip archive (requires zip utility, preinstalled on ubuntu-latest)
-  if (fs.existsSync('downloads/example.zip')) fs.unlinkSync('downloads/example.zip');
-  execSync('zip -r downloads/example.zip example.html title.txt images screenshots', { stdio: 'inherit' });
+  if (fs.existsSync('downloads/duolingo.zip')) fs.unlinkSync('downloads/duolingo.zip');
+  execSync('zip -r downloads/duolingo.zip duolingo.html title.txt images screenshots', { stdio: 'inherit' });
 
-  console.log('Zip archive created at downloads/example.zip');
+  console.log('Zip archive created at downloads/duolingo.zip');
 })();
 
 // Helper to escape special regex characters in src strings
