@@ -26,16 +26,13 @@ const { execSync } = require('child_process');
         if (imageMap.has(url)) return; // already captured
 
         const body = await response.body();
-        // Get file extension from URL or default to .png
         const urlPath = new URL(url).pathname;
         let ext = path.extname(urlPath) || '.png';
         if (!ext.startsWith('.')) ext = '.png';
 
-        // Create unique filename
         let baseName = path.basename(urlPath, ext) || 'image';
         baseName = baseName.replace(/[^a-zA-Z0-9]/g, '_');
         let filename = `${baseName}${ext}`;
-        // If filename exists, add counter
         while (fs.existsSync(path.join('images', filename))) {
           filename = `${baseName}_${++counter}${ext}`;
         }
@@ -48,8 +45,15 @@ const { execSync } = require('child_process');
     }
   });
 
-  // Navigate
-  await page.goto('https://www.duolingo.com', { waitUntil: 'networkidle' });
+  // Navigate – wait for the page to load, not network idle (Duolingo never becomes idle)
+  await page.goto('https://www.duolingo.com', {
+    waitUntil: 'load',     // DOM and immediate resources done
+    timeout: 60000         // 60 seconds for slow pages
+  });
+
+  // Scroll to the bottom to trigger lazy-loaded images
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(2000);  // give lazy images time to load
 
   // Get page title and save
   const title = await page.title();
@@ -64,23 +68,24 @@ const { execSync } = require('child_process');
     const src = await img.getAttribute('src');
     if (!src) continue;
 
-    // Get fully resolved URL
     const resolvedUrl = await img.evaluate(el => el.src);
     if (imageMap.has(resolvedUrl)) {
       const localFile = imageMap.get(resolvedUrl);
       const newSrc = `images/${localFile}`;
-      // Replace in HTML string (simple replace, could be improved)
-      html = html.replace(new RegExp(`src=["']${escapeRegExp(src)}["']`, 'g'), `src="${newSrc}"`);
+      html = html.replace(
+        new RegExp(`src=["']${escapeRegExp(src)}["']`, 'g'),
+        `src="${newSrc}"`
+      );
     }
   }
   fs.writeFileSync('duolingo.html', html);
 
-  // Take screenshot
+  // Take full-page screenshot
   await page.screenshot({ path: 'screenshots/screenshot.png', fullPage: true });
 
   await browser.close();
 
-  // Create zip archive (requires zip utility, preinstalled on ubuntu-latest)
+  // Create zip archive
   if (fs.existsSync('downloads/duolingo.zip')) fs.unlinkSync('downloads/duolingo.zip');
   execSync('zip -r downloads/duolingo.zip duolingo.html title.txt images screenshots', { stdio: 'inherit' });
 
