@@ -3,25 +3,24 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-// --- Read configuration from environment ---
+// --- Read inputs ---
 const targetUrl = process.env.TARGET_URL || 'https://www.duolingo.com';
 const takeScreenshot = (process.env.TAKE_SCREENSHOT || 'true') === 'true';
 const removeScripts = (process.env.REMOVE_SCRIPTS || 'true') === 'true';
 
-// --- Load steps file ---
+// --- Load steps ---
 let steps = [];
 try {
   steps = require('./steps.js');
   console.log(`Loaded ${steps.length} custom step(s).`);
 } catch (err) {
-  console.log('No steps.js found – continuing without custom steps.');
+  console.log('No steps.js found – nothing to do.');
+  process.exit(0);
 }
 
 (async () => {
   // Prepare directories
-  const dirs = ['downloads'];
-  if (takeScreenshot) dirs.push('screenshots');
-  dirs.push('images');
+  const dirs = ['downloads', 'images', 'screenshots'];
   dirs.forEach(d => {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
   });
@@ -30,11 +29,10 @@ try {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // Map to store response bodies of images: URL -> filename
+  // --- Image response interception ---
   const imageMap = new Map();
   let counter = 0;
 
-  // Intercept image responses
   page.on('response', async (response) => {
     if (response.request().resourceType() === 'image' && response.ok()) {
       try {
@@ -61,17 +59,19 @@ try {
     }
   });
 
-  // Navigate to the target URL
+  // --- Navigate to target URL ---
   await page.goto(targetUrl, {
     waitUntil: 'load',
     timeout: 60000
   });
 
-  // --- Execute custom steps ---
+  // --- Execute steps one by one ---
   for (const step of steps) {
-    console.log(`Executing step: ${step.action}`, step.selector || '');
+    console.log(`\nStep: ${step.action}${step.name ? ' -> ' + step.name : ''}${step.selector ? ' (' + step.selector + ')' : ''}`);
     try {
       switch (step.action) {
+
+        // ---- Navigation & interaction ----
         case 'waitForSelector':
           await page.waitForSelector(step.selector, step.options || {});
           break;
@@ -97,67 +97,91 @@ try {
         case 'press':
           await page.keyboard.press(step.key);
           break;
+
+        // ---- Screenshot (respects global toggle) ----
+        case 'screenshot':
+          if (!takeScreenshot) {
+            console.log('  -> Skipped (take_screenshot is false)');
+            break;
+          }
+          if (!step.name) {
+            console.warn('  -> Missing "name" for screenshot, skipping.');
+            break;
+          }
+          await page.screenshot({
+            path: `screenshots/screenshot_${step.name}.png`,
+            fullPage: true
+          });
+          console.log(`  -> Saved screenshots/screenshot_${step.name}.png`);
+          break;
+
+        // ---- Save HTML with image-rewriting ----
+        case 'saveHtml':
+          if (!step.name) {
+            console.warn('  -> Missing "name" for saveHtml, skipping.');
+            break;
+          }
+          let html = await page.content();
+
+          // Rewrite <img> src to local images
+          const imgElements = await page.$$('img');
+          for (const img of imgElements) {
+            const src = await img.getAttribute('src');
+            if (!src) continue;
+            const resolvedUrl = await img.evaluate(el => el.src);
+            if (imageMap.has(resolvedUrl)) {
+              const localFile = imageMap.get(resolvedUrl);
+              const newSrc = `images/${localFile}`;
+              html = html.replace(
+                new RegExp(`src=["']${escapeRegExp(src)}["']`, 'g'),
+                `src="${newSrc}"`
+              );
+            }
+          }
+
+          if (removeScripts) {
+            html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+          }
+
+          fs.writeFileSync(`page_${step.name}.html`, html);
+          console.log(`  -> Saved page_${step.name}.html`);
+          break;
+
         default:
-          console.warn(`Unknown action: ${step.action}`);
+          console.warn(`  -> Unknown action: ${step.action}`);
       }
     } catch (err) {
-      console.error(`Step failed: ${step.action}`, err.message);
-      // Decide whether to break or continue – here we break to avoid broken state
+      console.error(`  -> Step failed: ${err.message}`);
+      // Stop further steps on failure to avoid broken state
       break;
     }
   }
 
-  // Scroll to bottom to trigger lazy images (in case steps didn't already do it)
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(1500);
-
-  // --- Screenshot (optional) ---
-  if (takeScreenshot) {
-    await page.screenshot({ path: 'screenshots/screenshot.png', fullPage: true });
-    console.log('Screenshot saved.');
-  }
-
-  // --- HTML processing ---
-  let html = await page.content();
-
-  const imgElements = await page.$$('img');
-  for (const img of imgElements) {
-    const src = await img.getAttribute('src');
-    if (!src) continue;
-
-    const resolvedUrl = await img.evaluate(el => el.src);
-    if (imageMap.has(resolvedUrl)) {
-      const localFile = imageMap.get(resolvedUrl);
-      const newSrc = `images/${localFile}`;
-      html = html.replace(
-        new RegExp(`src=["']${escapeRegExp(src)}["']`, 'g'),
-        `src="${newSrc}"`
-      );
-    }
-  }
-
-  if (removeScripts) {
-    html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-    console.log('Script tags removed.');
-  }
-
-  fs.writeFileSync('page.html', html);
-  console.log('HTML saved.');
-
   await browser.close();
 
-  // --- ZIP creation ---
-  const zipItems = ['page.html'];
-  if (fs.existsSync('images')) zipItems.push('images');
-  if (takeScreenshot && fs.existsSync('screenshots')) zipItems.push('screenshots');
+  // --- Create ZIP with all generated artefacts ---
+  const filesToZip = [];
+  if (fs.existsSync('images')) filesToZip.push('images');
 
-  const zipFile = 'downloads/snapshot.zip';
-  if (fs.existsSync(zipFile)) fs.unlinkSync(zipFile);
-  execSync(`zip -r ${zipFile} ${zipItems.join(' ')}`, { stdio: 'inherit' });
+  const pageFiles = fs.readdirSync('.').filter(f => f.startsWith('page_') && f.endsWith('.html'));
+  if (pageFiles.length) filesToZip.push(...pageFiles);
 
-  console.log('ZIP created at', zipFile);
+  if (takeScreenshot && fs.existsSync('screenshots')) {
+    const ssFiles = fs.readdirSync('screenshots');
+    if (ssFiles.length) filesToZip.push('screenshots');
+  }
+
+  if (filesToZip.length > 0) {
+    const zipFile = 'downloads/snapshot.zip';
+    if (fs.existsSync(zipFile)) fs.unlinkSync(zipFile);
+    execSync(`zip -r ${zipFile} ${filesToZip.join(' ')}`, { stdio: 'inherit' });
+    console.log(`\nZIP created at ${zipFile}`);
+  } else {
+    console.log('No files to zip.');
+  }
 })();
 
+// Helper to escape regex characters
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
