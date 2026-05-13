@@ -3,16 +3,21 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+// --- Read configuration from environment ---
+const targetUrl = process.env.TARGET_URL || 'https://www.duolingo.com';
+const takeScreenshot = (process.env.TAKE_SCREENSHOT || 'true') === 'true';
+const removeScripts = (process.env.REMOVE_SCRIPTS || 'true') === 'true';
+
+// --- Load steps file ---
+let steps = [];
+try {
+  steps = require('./steps.js');
+  console.log(`Loaded ${steps.length} custom step(s).`);
+} catch (err) {
+  console.log('No steps.js found – continuing without custom steps.');
+}
+
 (async () => {
-  // --- READ INPUTS FROM ENVIRONMENT ---
-  const targetUrl = process.env.TARGET_URL || 'https://www.duolingo.com';
-  const takeScreenshot = (process.env.TAKE_SCREENSHOT || 'true') === 'true';
-  const removeScripts = (process.env.REMOVE_SCRIPTS || 'true') === 'true';
-
-  console.log(`URL: ${targetUrl}`);
-  console.log(`Take screenshot: ${takeScreenshot}`);
-  console.log(`Remove scripts: ${removeScripts}`);
-
   // Prepare directories
   const dirs = ['downloads'];
   if (takeScreenshot) dirs.push('screenshots');
@@ -56,26 +61,65 @@ const { execSync } = require('child_process');
     }
   });
 
-  // Navigate to target URL
+  // Navigate to the target URL
   await page.goto(targetUrl, {
     waitUntil: 'load',
     timeout: 60000
   });
 
-  // Scroll to bottom to trigger lazy‑loaded images
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(2000);
+  // --- Execute custom steps ---
+  for (const step of steps) {
+    console.log(`Executing step: ${step.action}`, step.selector || '');
+    try {
+      switch (step.action) {
+        case 'waitForSelector':
+          await page.waitForSelector(step.selector, step.options || {});
+          break;
+        case 'click':
+          await page.click(step.selector);
+          break;
+        case 'waitForTimeout':
+          await page.waitForTimeout(step.ms || 0);
+          break;
+        case 'scrollTo':
+          if (step.position === 'bottom') {
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+          } else {
+            await page.evaluate((pos) => window.scrollTo(0, pos), step.position || 0);
+          }
+          break;
+        case 'fill':
+          await page.fill(step.selector, step.value);
+          break;
+        case 'hover':
+          await page.hover(step.selector);
+          break;
+        case 'press':
+          await page.keyboard.press(step.key);
+          break;
+        default:
+          console.warn(`Unknown action: ${step.action}`);
+      }
+    } catch (err) {
+      console.error(`Step failed: ${step.action}`, err.message);
+      // Decide whether to break or continue – here we break to avoid broken state
+      break;
+    }
+  }
 
-  // --- HANDLE SCREENSHOT (OPTIONAL) ---
+  // Scroll to bottom to trigger lazy images (in case steps didn't already do it)
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(1500);
+
+  // --- Screenshot (optional) ---
   if (takeScreenshot) {
     await page.screenshot({ path: 'screenshots/screenshot.png', fullPage: true });
     console.log('Screenshot saved.');
   }
 
-  // --- GET AND PROCESS HTML ---
+  // --- HTML processing ---
   let html = await page.content();
 
-  // Rewrite <img> src to local images
   const imgElements = await page.$$('img');
   for (const img of imgElements) {
     const src = await img.getAttribute('src');
@@ -92,19 +136,17 @@ const { execSync } = require('child_process');
     }
   }
 
-  // Remove <script> tags if requested
   if (removeScripts) {
     html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
     console.log('Script tags removed.');
   }
 
-  // Save final HTML
   fs.writeFileSync('page.html', html);
-  console.log('HTML saved as page.html');
+  console.log('HTML saved.');
 
   await browser.close();
 
-  // --- CREATE ZIP ARCHIVE ---
+  // --- ZIP creation ---
   const zipItems = ['page.html'];
   if (fs.existsSync('images')) zipItems.push('images');
   if (takeScreenshot && fs.existsSync('screenshots')) zipItems.push('screenshots');
