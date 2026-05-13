@@ -1,7 +1,6 @@
 name: Take Screenshot & Save Title
 on:
-  push:                # or schedule, workflow_dispatch, etc.
-    branches: [main]
+  workflow_dispatch:        # manual trigger only
 
 jobs:
   screenshot:
