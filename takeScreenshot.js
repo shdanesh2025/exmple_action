@@ -4,8 +4,19 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 (async () => {
+  // --- READ INPUTS FROM ENVIRONMENT ---
+  const targetUrl = process.env.TARGET_URL || 'https://www.duolingo.com';
+  const takeScreenshot = (process.env.TAKE_SCREENSHOT || 'true') === 'true';
+  const removeScripts = (process.env.REMOVE_SCRIPTS || 'true') === 'true';
+
+  console.log(`URL: ${targetUrl}`);
+  console.log(`Take screenshot: ${takeScreenshot}`);
+  console.log(`Remove scripts: ${removeScripts}`);
+
   // Prepare directories
-  const dirs = ['downloads', 'images', 'screenshots'];
+  const dirs = ['downloads'];
+  if (takeScreenshot) dirs.push('screenshots');
+  dirs.push('images');
   dirs.forEach(d => {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
   });
@@ -14,7 +25,7 @@ const { execSync } = require('child_process');
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // Map to store response bodies of images: URL -> { filename, buffer }
+  // Map to store response bodies of images: URL -> filename
   const imageMap = new Map();
   let counter = 0;
 
@@ -23,7 +34,7 @@ const { execSync } = require('child_process');
     if (response.request().resourceType() === 'image' && response.ok()) {
       try {
         const url = response.url();
-        if (imageMap.has(url)) return; // already captured
+        if (imageMap.has(url)) return;
 
         const body = await response.body();
         const urlPath = new URL(url).pathname;
@@ -45,24 +56,26 @@ const { execSync } = require('child_process');
     }
   });
 
-  // Navigate – wait for the page to load, not network idle (Duolingo never becomes idle)
-  await page.goto('https://www.duolingo.com', {
-    waitUntil: 'load',     // DOM and immediate resources done
-    timeout: 60000         // 60 seconds for slow pages
+  // Navigate to target URL
+  await page.goto(targetUrl, {
+    waitUntil: 'load',
+    timeout: 60000
   });
 
-  // Scroll to the bottom to trigger lazy-loaded images
+  // Scroll to bottom to trigger lazy‑loaded images
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(2000);  // give lazy images time to load
+  await page.waitForTimeout(2000);
 
-  // Get page title and save
-  const title = await page.title();
-  fs.writeFileSync('title.txt', title, 'utf8');
+  // --- HANDLE SCREENSHOT (OPTIONAL) ---
+  if (takeScreenshot) {
+    await page.screenshot({ path: 'screenshots/screenshot.png', fullPage: true });
+    console.log('Screenshot saved.');
+  }
 
-  // Get the page HTML and rewrite image src attributes
+  // --- GET AND PROCESS HTML ---
   let html = await page.content();
 
-  // Find all <img> elements and update their src
+  // Rewrite <img> src to local images
   const imgElements = await page.$$('img');
   for (const img of imgElements) {
     const src = await img.getAttribute('src');
@@ -78,21 +91,31 @@ const { execSync } = require('child_process');
       );
     }
   }
-  fs.writeFileSync('duolingo.html', html);
 
-  // Take full-page screenshot
-  await page.screenshot({ path: 'screenshots/screenshot.png', fullPage: true });
+  // Remove <script> tags if requested
+  if (removeScripts) {
+    html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+    console.log('Script tags removed.');
+  }
+
+  // Save final HTML
+  fs.writeFileSync('page.html', html);
+  console.log('HTML saved as page.html');
 
   await browser.close();
 
-  // Create zip archive
-  if (fs.existsSync('downloads/duolingo.zip')) fs.unlinkSync('downloads/duolingo.zip');
-  execSync('zip -r downloads/duolingo.zip duolingo.html title.txt images screenshots', { stdio: 'inherit' });
+  // --- CREATE ZIP ARCHIVE ---
+  const zipItems = ['page.html'];
+  if (fs.existsSync('images')) zipItems.push('images');
+  if (takeScreenshot && fs.existsSync('screenshots')) zipItems.push('screenshots');
 
-  console.log('Zip archive created at downloads/duolingo.zip');
+  const zipFile = 'downloads/snapshot.zip';
+  if (fs.existsSync(zipFile)) fs.unlinkSync(zipFile);
+  execSync(`zip -r ${zipFile} ${zipItems.join(' ')}`, { stdio: 'inherit' });
+
+  console.log('ZIP created at', zipFile);
 })();
 
-// Helper to escape special regex characters in src strings
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
