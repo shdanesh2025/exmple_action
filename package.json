@@ -1,0 +1,10 @@
+{
+  "name": "e2e-playwright",
+  "private": true,
+  "scripts": {
+    "screenshot": "node takeScreenshot.js"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
