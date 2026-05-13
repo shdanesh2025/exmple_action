@@ -1,5 +1,21 @@
 name: Manual Screenshot & ZIP
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'URL to capture'
+        required: false
+        default: 'https://www.duolingo.com'
+      take_screenshot:
+        description: 'Take a full-page screenshot'
+        required: false
+        default: true
+        type: boolean
+      remove_scripts:
+        description: 'Remove all <script> tags from saved HTML'
+        required: false
+        default: true
+        type: boolean
 jobs:
   screenshot:
     runs-on: ubuntu-latest
@@ -12,9 +28,13 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       - name: Run script
+        env:
+          TARGET_URL: ${{ github.event.inputs.url }}
+          TAKE_SCREENSHOT: ${{ github.event.inputs.take_screenshot }}
+          REMOVE_SCRIPTS: ${{ github.event.inputs.remove_scripts }}
         run: node takeScreenshot.js
       - name: Commit zip file
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: update duolingo.zip with page snapshot"
-          file_pattern: "downloads/duolingo.zip"
+          commit_message: "chore: update snapshot"
+          file_pattern: "downloads/*.zip"   # generic pattern to catch any zip
