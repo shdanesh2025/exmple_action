@@ -16,5 +16,5 @@ jobs:
       - name: Commit zip file
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: update example.zip with page snapshot"
-          file_pattern: "downloads/example.zip"
+          commit_message: "chore: update duolingo.zip with page snapshot"
+          file_pattern: "downloads/duolingo.zip"
